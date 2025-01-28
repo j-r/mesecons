@@ -41,3 +41,71 @@ end
 -- Textures
 
 mesecon.texture.steel_block = "default_steel_block.png"
+
+-- MCLA redstone interoperability
+
+if minetest.get_modpath("mcl_redstone") then
+	local rules = mesecon.rules.alldirs
+	local redstone = {
+		connects_to = function(node)
+			return true
+		end,
+		get_power = function(node)
+			return (node.param2 >= 128) and 15 or 0
+		end,
+		update = function(pos, node)
+			if node.param2 >= 128 then return end
+
+			local def = minetest.registered_nodes[node.name]
+			local oldpowered = def.__mesecon_state == "on"
+			local powered = mcl_redstone.get_power(pos, nil, "direct") ~= 0
+			if powered and not oldpowered then
+				mesecon.flipstate(pos, node)
+				mesecon.receptor_on(pos, rules)
+			elseif not powered and oldpowered then
+				mesecon.flipstate(pos, node)
+				mesecon.receptor_off(pos, rules)
+			end
+		end,
+	}
+
+	mesecon.register_node("mesecons_gamecompat:converter", {
+		description = "Converter",
+		tiles = {"default_dirt.png"},
+		groups = {handy=1, axey=1, material_wood=1, flammable=-1},
+		sunlight_propagates = true,
+		is_ground_content = false,
+		paramtype = "light",
+		drawtype = "nodebox",
+		node_box = {
+			type = "fixed",
+			fixed = { -6/16, -6/16, -6/16, 6/16, 6/16, 6/16 },
+		},
+		_mcl_redstone = redstone,
+	}, {
+		mesecons = {
+			receptor = {
+				state = mesecon.state.off,
+				rules = rules,
+			},
+			effector = {
+				rules = rules,
+				action_on = function(pos, node)
+					node.param2 = node.param2 % 128 + 128
+					mcl_redstone.swap_node(vector.copy(pos), node)
+				end,
+				action_off = function(pos, node)
+					node.param2 = node.param2 % 128
+					mcl_redstone.swap_node(vector.copy(pos), node)
+				end
+			}
+		},
+	}, {
+		mesecons = {
+			receptor = {
+				state = mesecon.state.on,
+				rules = rules,
+			},
+		},
+	})
+end
