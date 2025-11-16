@@ -12,12 +12,12 @@
 -- ports = get_real_port_states(pos): gets if inputs are powered from outside
 -- newport = merge_port_states(state1, state2): just does result = state1 or state2 for every port
 -- set_port(pos, rule, state): activates/deactivates the mesecons according to the port states
--- set_port_states(pos, ports): Applies new port states to a Luacontroller at pos
+-- set_port_states(pos, ports, ignore_overheat): Applies new port states to a Luacontroller at pos
 -- run_inner(pos, code, event): runs code on the controller at pos and event
 -- reset_formspec(pos, code, errmsg): installs new code and prints error messages, without resetting LCID
 -- reset_meta(pos, code, errmsg): performs a software-reset, installs new code and prints error message
 -- run(pos, event): a wrapper for run_inner which gets code & handles errors via reset_meta
--- resetn(pos): performs a hardware reset, turns off all ports
+-- reset(pos): performs a hardware reset, turns off all ports
 --
 -- The Sandbox
 -- The whole code of the controller runs in a sandbox,
@@ -129,10 +129,15 @@ local function clean_port_states(ports)
 	ports.d = ports.d and true or false
 end
 
+local is_controller_burnt
 
-local function set_port_states(pos, ports)
+local function set_port_states(pos, ports, ignore_overheat)
 	local node = minetest.get_node(pos)
 	local name = node.name
+	if not ignore_overheat and is_controller_burnt(name) then
+		return -- Avoid swapping back to a non-burnt node
+	end
+
 	clean_port_states(ports)
 	local vports = minetest.registered_nodes[name].virtual_portstates
 	local new_name = generate_name(ports)
@@ -168,6 +173,11 @@ end
 -----------------
 -- Overheating --
 -----------------
+
+is_controller_burnt = function(node_name)
+	return node_name == (BASENAME .. "_burnt")
+end
+
 local function burn_controller(pos)
 	local node = minetest.get_node(pos)
 	node.name = BASENAME.."_burnt"
@@ -178,6 +188,10 @@ local function burn_controller(pos)
 end
 
 local function overheat(pos)
+	if is_controller_burnt(core.get_node(pos).name) then
+		-- Avoid spamming "Node overheats" log messages.
+		return true
+	end
 	if mesecon.do_overheat(pos) then -- If too hot
 		burn_controller(pos)
 		return true
@@ -688,9 +702,10 @@ local function run_inner(pos, code, event)
 end
 
 local function reset_formspec(meta, code, errmsg)
+	code = code or ""
 	meta:set_string("code", code)
 	meta:mark_as_private("code")
-	code = minetest.formspec_escape(code or "")
+	code = minetest.formspec_escape(code)
 	errmsg = minetest.formspec_escape(tostring(errmsg or ""))
 	meta:set_string("formspec", "size[12,10]"
 		.."style_type[label,textarea;font=mono]"
@@ -722,11 +737,11 @@ local function run(pos, event)
 end
 
 local function reset(pos)
-	set_port_states(pos, {a=false, b=false, c=false, d=false})
+	set_port_states(pos, {a=false, b=false, c=false, d=false}, true)
 end
 
 local function node_timer(pos)
-	if minetest.registered_nodes[minetest.get_node(pos).name].is_burnt then
+	if is_controller_burnt(core.get_node(pos).name) then
 		return false
 	end
 	run(pos, {type="interrupt"})
@@ -740,7 +755,7 @@ end
 mesecon.queue:add_function("lc_interrupt", function (pos, luac_id, iid)
 	-- There is no luacontroller anymore / it has been reprogrammed / replaced / burnt
 	if (minetest.get_meta(pos):get_int("luac_id") ~= luac_id) then return end
-	if (minetest.registered_nodes[minetest.get_node(pos).name].is_burnt) then return end
+	if is_controller_burnt(core.get_node(pos).name) then return end
 	run(pos, {type="interrupt", iid = iid})
 end)
 
@@ -748,7 +763,8 @@ mesecon.queue:add_function("lc_digiline_relay", function (pos, channel, luac_id,
 	if not digiline then return end
 	-- This check is only really necessary because in case of server crash, old actions can be thrown into the future
 	if (minetest.get_meta(pos):get_int("luac_id") ~= luac_id) then return end
-	if (minetest.registered_nodes[minetest.get_node(pos).name].is_burnt) then return end
+	-- This escapes the sandbox, thus give a harsh penalty.
+	if overheat(pos) then return end
 	-- The actual work
 	digiline:receptor_send(pos, digiline.rules.default, channel, msg)
 end)
@@ -929,7 +945,6 @@ minetest.register_node(BASENAME .. "_burnt", {
 		"jeija_microcontroller_sides.png"
 	},
 	inventory_image = "jeija_luacontroller_burnt_top.png",
-	is_burnt = true,
 	paramtype = "light",
 	is_ground_content = false,
 	groups = {dig_immediate=2, not_in_creative_inventory=1},
